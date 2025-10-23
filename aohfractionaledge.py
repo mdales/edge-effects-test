@@ -92,7 +92,7 @@ def calculate_aoh(
         filtered_habitats = habitat.isin(habitat_list)
         habitat_float = filtered_habitats.astype(yg.DataType.Float32)
 
-        # Detect which neighbors are present (1) or missing (0)
+        # Detect which neighbours are present (1) or missing (0)
         has_north = habitat_float.conv2d(north_matrix)
         has_south = habitat_float.conv2d(south_matrix)
         has_east = habitat_float.conv2d(east_matrix)
@@ -102,32 +102,45 @@ def calculate_aoh(
         has_southeast = habitat_float.conv2d(southeast_matrix)
         has_southwest = habitat_float.conv2d(southwest_matrix)
 
-        # Count missing cardinals (0 to 4)
-        missing_cardinals = (yg.constant(1.0) - has_north) + (yg.constant(1.0) - has_south) + \
-                           (yg.constant(1.0) - has_east) + (yg.constant(1.0) - has_west)
+        # Calculate remaining area using geometric approach
+        # Think of this as expanding non-habitat by distance edge_proportion
 
-        # Detect corners where BOTH adjacent cardinals are missing AND the diagonal is missing
-        # In these cases, we need to add back the p² corner overlap
-        # If the diagonal neighbor is present, both pixels lose the corner so no correction needed
-        # NE corner: north AND east AND northeast all missing
-        # NW corner: north AND west AND northwest all missing
-        # SE corner: south AND east AND southeast all missing
-        # SW corner: south AND west AND southwest all missing
-        missing_ne_corner = (yg.constant(1.0) - has_north) * (yg.constant(1.0) - has_east) * \
-                           (yg.constant(1.0) - has_northeast)
-        missing_nw_corner = (yg.constant(1.0) - has_north) * (yg.constant(1.0) - has_west) * \
-                           (yg.constant(1.0) - has_northwest)
-        missing_se_corner = (yg.constant(1.0) - has_south) * (yg.constant(1.0) - has_east) * \
-                           (yg.constant(1.0) - has_southeast)
-        missing_sw_corner = (yg.constant(1.0) - has_south) * (yg.constant(1.0) - has_west) * \
-                           (yg.constant(1.0) - has_southwest)
-        corner_overlaps = missing_ne_corner + missing_nw_corner + missing_se_corner + missing_sw_corner
+        is_missing_n = yg.constant(1.0) - has_north
+        is_missing_s = yg.constant(1.0) - has_south
+        is_missing_e = yg.constant(1.0) - has_east
+        is_missing_w = yg.constant(1.0) - has_west
+        is_missing_ne = yg.constant(1.0) - has_northeast
+        is_missing_nw = yg.constant(1.0) - has_northwest
+        is_missing_se = yg.constant(1.0) - has_southeast
+        is_missing_sw = yg.constant(1.0) - has_southwest
 
-        # Calculate remaining fraction:
-        # Start at 1.0, subtract edge_proportion for each missing cardinal,
-        # add back edge_proportion² for each corner overlap (only when diagonal is also missing)
-        edged_habitats = yg.constant(1.0) - (missing_cardinals * edge_proportion) + \
-                        (corner_overlaps * (edge_proportion ** 2))
+        # Step 1: Calculate remaining rectangular core after cardinal erosion
+        # Each missing cardinal removes a strip of width/height p
+        vertical_removed = (is_missing_n + is_missing_s) * edge_proportion
+        horizontal_removed = (is_missing_e + is_missing_w) * edge_proportion
+
+        # Clamp to [0, 1] to handle p > 0.5 cases
+        vertical_remaining = yg.constant(1.0) - vertical_removed
+        vertical_remaining = yg.where(vertical_remaining < 0.0, 0.0, vertical_remaining)
+
+        horizontal_remaining = yg.constant(1.0) - horizontal_removed
+        horizontal_remaining = yg.where(horizontal_remaining < 0.0, 0.0, horizontal_remaining)
+
+        # Core rectangular area remaining after cardinal erosion
+        core_area = vertical_remaining * horizontal_remaining
+
+        # Step 2: Subtract diagonal encroachments
+        # Each missing diagonal removes its p² corner, but only where corners exist
+        # and haven't already been removed by cardinals
+        # If adjacent cardinals are missing, the diagonal's encroachment is already accounted for
+        diagonal_removal = \
+            is_missing_ne * has_north * has_east * (edge_proportion ** 2) + \
+            is_missing_nw * has_north * has_west * (edge_proportion ** 2) + \
+            is_missing_se * has_south * has_east * (edge_proportion ** 2) + \
+            is_missing_sw * has_south * has_west * (edge_proportion ** 2)
+
+        # Final remaining area
+        edged_habitats = core_area - diagonal_removal
 
         # CRITICAL: Multiply by filtered_habitats to ensure non-habitat pixels (center=0) stay 0
         edged_habitats = edged_habitats * habitat_float
