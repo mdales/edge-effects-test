@@ -4,7 +4,6 @@ import math
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Set
 
 import numpy as np
 import pandas as pd
@@ -15,7 +14,7 @@ from alive_progress import alive_bar
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)-8s %(message)s')
 
-def load_crosswalk_table(table_file_name: Path) -> Dict[str,List[int]]:
+def load_crosswalk_table(table_file_name: Path) -> dict[str, list[int]]:
     rawdata = pd.read_csv(table_file_name)
     result: dict[str, list[int]] = {}
     for _, row in rawdata.iterrows():
@@ -26,7 +25,7 @@ def load_crosswalk_table(table_file_name: Path) -> Dict[str,List[int]]:
             result[code] = [int(row.value)]
     return result
 
-def crosswalk_habitats(crosswalk_table: Dict[str, List[int]], raw_habitats: Set[str]) -> Set[int]:
+def crosswalk_habitats(crosswalk_table: dict[str, list[int]], raw_habitats: set[str]) -> set[int]:
     result = set()
     for habitat in raw_habitats:
         try:
