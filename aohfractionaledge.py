@@ -70,10 +70,11 @@ def calculate_aoh(
         logger.error("No habitats found in crosswalk! %s", raw_habitats)
         sys.exit()
 
-    matrix = np.array([
+    # Cardinal directions only (N, S, E, W) - excludes diagonals
+    cardinal_matrix = np.array([
+        [0.0, 1.0, 0.0],
         [1.0, 1.0, 1.0],
-        [1.0, 1.0, 1.0],
-        [1.0, 1.0, 1.0],
+        [0.0, 1.0, 0.0],
     ])
 
     with (
@@ -83,14 +84,19 @@ def calculate_aoh(
         yg.read_shape(species_info_path) as species_range,
     ):
         filtered_habitats = habitat.isin(habitat_list)
-        # Count neighboring habitat pixels (0-9 for each pixel)
-        neighbor_count = filtered_habitats.astype(yg.DataType.Float32).conv2d(matrix)
 
-        # Calculate fractional edge values
-        # For pixels with all 9 neighbors: 1.0 - 9*edge_proportion + 9*edge_proportion = 1.0
-        # For pixels with N neighbors: 1.0 - 9*edge_proportion + N*edge_proportion
-        # = 1.0 - (9-N)*edge_proportion
-        edged_habitats = 1.0 - (9.0 * edge_proportion) + (neighbor_count * edge_proportion)
+        # Count habitat pixels including center and 4 cardinal neighbors (0-5)
+        # Result: 5 = center + all 4 cardinals present, 4 = center + 3 cardinals, etc.
+        neighbor_count = filtered_habitats.astype(yg.DataType.Float32).conv2d(cardinal_matrix)
+
+        # Calculate fractional edge values:
+        # - If center pixel is 0 (neighbor_count < 1), result is 0
+        # - Otherwise: start at 1.0, subtract edge_proportion for each missing cardinal neighbor
+        # - neighbor_count of 5 = all present, subtract 0
+        # - neighbor_count of 4 = 1 missing, subtract 1*edge_proportion
+        # - neighbor_count of 3 = 2 missing, subtract 2*edge_proportion, etc.
+        edged_habitats = filtered_habitats.astype(yg.DataType.Float32) * \
+            (1.0 - ((5.0 - neighbor_count) * edge_proportion))
 
         # Clip to ensure values are between 0 and 1
         edged_habitats = edged_habitats.max(0.0).min(1.0)
