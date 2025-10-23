@@ -1,0 +1,12 @@
+gdal[numpy]
+yirgacheffe[mlx]
+pandas
+geopandas
+alive-progress
+
+mlx
+types-geopandas
+pandas-stubs
+pylint
+mypy
+pytest
