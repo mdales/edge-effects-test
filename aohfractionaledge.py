@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import argparse
 import logging
 import math
@@ -70,36 +72,38 @@ def calculate_aoh(
         logger.error("No habitats found in crosswalk! %s", raw_habitats)
         sys.exit()
 
-    # Cardinal directions only (N, S, E, W) - excludes diagonals
-    cardinal_matrix = np.array([
-        [0.0, 1.0, 0.0],
-        [1.0, 1.0, 1.0],
-        [0.0, 1.0, 0.0],
+    # Spatial weight matrix accounting for geometric overlap of edge regions
+    # Corners represent edge_proportion², cardinals are edge strips minus corner overlaps,
+    # and center is the remaining interior after all edges are accounted for
+    corner_weight = edge_proportion ** 2
+    cardinal_weight = edge_proportion - (2 * corner_weight)
+    center_weight = 1.0 - (4 * corner_weight + 4 * cardinal_weight)
+
+    weight_matrix = np.array([
+        [corner_weight, cardinal_weight, corner_weight],
+        [cardinal_weight, center_weight, cardinal_weight],
+        [corner_weight, cardinal_weight, corner_weight],
     ])
 
     with (
         yg.read_raster(elevation_path) as elevation,
         yg.read_raster(habitat_path) as habitat,
         yg.read_narrow_raster(area_path) as area,
-        yg.read_shape(species_info_path) as species_range,
+        yg.read_shape_like(species_info_path, elevation) as species_range,
     ):
         filtered_habitats = habitat.isin(habitat_list)
 
-        # Count habitat pixels including center and 4 cardinal neighbors (0-5)
-        # Result: 5 = center + all 4 cardinals present, 4 = center + 3 cardinals, etc.
-        neighbor_count = filtered_habitats.astype(yg.DataType.Float32).conv2d(cardinal_matrix)
+        # Convolve with weight matrix to calculate the fraction of each pixel's area
+        # that is surrounded by suitable habitat (accounting for geometric overlap)
+        edged_habitats = filtered_habitats.astype(yg.DataType.Float32).conv2d(weight_matrix)
 
-        # Calculate fractional edge values:
-        # - If center pixel is 0 (neighbor_count < 1), result is 0
-        # - Otherwise: start at 1.0, subtract edge_proportion for each missing cardinal neighbor
-        # - neighbor_count of 5 = all present, subtract 0
-        # - neighbor_count of 4 = 1 missing, subtract 1*edge_proportion
-        # - neighbor_count of 3 = 2 missing, subtract 2*edge_proportion, etc.
-        edged_habitats = filtered_habitats.astype(yg.DataType.Float32) * \
-            (1.0 - ((5.0 - neighbor_count) * edge_proportion))
+        # CRITICAL: Multiply by filtered_habitats to ensure non-habitat pixels (center=0) stay 0
+        # This prevents dilation/blurring - we only want erosion of existing habitat
+        edged_habitats = edged_habitats * filtered_habitats
 
         # Clip to ensure values are between 0 and 1
-        edged_habitats = edged_habitats.max(0.0).min(1.0)
+        edged_habitats = yg.where(edged_habitats < 0.0, 0.0, edged_habitats)
+        edged_habitats = yg.where(edged_habitats > 1.0, 1.0, edged_habitats)
 
         aoh = species_range * \
             ((elevation > elevation_lower) & (elevation < elevation_upper)) * \

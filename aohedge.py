@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import argparse
 import logging
 import math
@@ -79,7 +81,7 @@ def calculate_aoh(
         yg.read_raster(elevation_path) as elevation,
         yg.read_raster(habitat_path) as habitat,
         yg.read_narrow_raster(area_path) as area,
-        yg.read_shape(species_info_path) as species_range,
+        yg.read_shape_like(species_info_path, elevation) as species_range,
     ):
         filtered_habitats = habitat.isin(habitat_list)
         edged_habitats = filtered_habitats.astype(yg.DataType.Float32).conv2d(matrix) == 9.0

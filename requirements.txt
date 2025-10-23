@@ -1,5 +1,5 @@
 gdal[numpy]
-yirgacheffe[mlx]
+yirgacheffe[mlx]>=1.9.4
 pandas
 geopandas
 alive-progress
