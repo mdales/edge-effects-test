@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)-8s %(me
 
 def load_crosswalk_table(table_file_name: Path) -> Dict[str,List[int]]:
     rawdata = pd.read_csv(table_file_name)
-    result = {}
+    result: dict[str, list[int]] = {}
     for _, row in rawdata.iterrows():
         code = str(row.code)
         try:
