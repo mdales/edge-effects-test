@@ -44,6 +44,7 @@ def calculate_aoh(
     area_path: Path,
     crosswalk_path: Path,
     output_path: Path,
+    edge_proportion: float,
 ) -> None:
 
     os.makedirs(output_path.parent, exist_ok=True)
@@ -71,10 +72,17 @@ def calculate_aoh(
         logger.error("No habitats found in crosswalk! %s", raw_habitats)
         sys.exit()
 
-    matrix = np.array([
-        [1.0, 1.0, 1.0],
-        [1.0, 1.0, 1.0],
-        [1.0, 1.0, 1.0],
+    # Spatial weight matrix accounting for geometric overlap of edge regions
+    # Corners represent edge_proportion², cardinals are edge strips minus corner overlaps,
+    # and center is the remaining interior after all edges are accounted for
+    corner_weight = edge_proportion ** 2
+    cardinal_weight = edge_proportion - (2 * corner_weight)
+    center_weight = 1.0 - (4 * corner_weight + 4 * cardinal_weight)
+
+    weight_matrix = np.array([
+        [corner_weight, cardinal_weight, corner_weight],
+        [cardinal_weight, center_weight, cardinal_weight],
+        [corner_weight, cardinal_weight, corner_weight],
     ])
 
     with (
@@ -84,7 +92,18 @@ def calculate_aoh(
         yg.read_shape_like(species_info_path, elevation) as species_range,
     ):
         filtered_habitats = habitat.isin(habitat_list)
-        edged_habitats = filtered_habitats.astype(yg.DataType.Float32).conv2d(matrix) == 9.0
+
+        # Convolve with weight matrix to calculate the fraction of each pixel's area
+        # that is surrounded by suitable habitat (accounting for geometric overlap)
+        edged_habitats = filtered_habitats.astype(yg.DataType.Float32).conv2d(weight_matrix)
+
+        # CRITICAL: Multiply by filtered_habitats to ensure non-habitat pixels (center=0) stay 0
+        # This prevents dilation/blurring - we only want erosion of existing habitat
+        edged_habitats = edged_habitats * filtered_habitats
+
+        # Clip to ensure values are between 0 and 1
+        edged_habitats = yg.where(edged_habitats < 0.0, 0.0, edged_habitats)
+        edged_habitats = yg.where(edged_habitats > 1.0, 1.0, edged_habitats)
 
         aoh = species_range * \
             ((elevation > elevation_lower) & (elevation < elevation_upper)) * \
@@ -94,7 +113,7 @@ def calculate_aoh(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Binary AoH generator")
+    parser = argparse.ArgumentParser(description="Fractional edge AoH generator")
     parser.add_argument(
         '--species',
         type=Path,
@@ -131,6 +150,13 @@ def main() -> None:
         dest="crosswalk_path",
     )
     parser.add_argument(
+        '--edge',
+        type=float,
+        help="Proportion of pixel edge to remove for each missing neighbor (e.g., 0.3 for 30m on 100m pixels)",
+        required=True,
+        dest="edge_proportion",
+    )
+    parser.add_argument(
         '--output',
         type=Path,
         help="Path of result raster",
@@ -146,6 +172,7 @@ def main() -> None:
         args.area_path,
         args.crosswalk_path,
         args.output_path,
+        args.edge_proportion,
     )
 
 if __name__ == "__main__":
