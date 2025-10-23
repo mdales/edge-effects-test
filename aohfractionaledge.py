@@ -72,18 +72,16 @@ def calculate_aoh(
         logger.error("No habitats found in crosswalk! %s", raw_habitats)
         sys.exit()
 
-    # Spatial weight matrix accounting for geometric overlap of edge regions
-    # Corners represent edge_proportion², cardinals are edge strips minus corner overlaps,
-    # and center is the remaining interior after all edges are accounted for
-    corner_weight = edge_proportion ** 2
-    cardinal_weight = edge_proportion - (2 * corner_weight)
-    center_weight = 1.0 - (4 * corner_weight + 4 * cardinal_weight)
-
-    weight_matrix = np.array([
-        [corner_weight, cardinal_weight, corner_weight],
-        [cardinal_weight, center_weight, cardinal_weight],
-        [corner_weight, cardinal_weight, corner_weight],
-    ])
+    # Convolution matrices to detect each neighbor (4 cardinals + 4 diagonals)
+    # 1 where the neighbor is, 0 elsewhere
+    north_matrix = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    south_matrix = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    east_matrix = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]])
+    west_matrix = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    northeast_matrix = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    northwest_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    southeast_matrix = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    southwest_matrix = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
 
     with (
         yg.read_raster(elevation_path) as elevation,
@@ -92,14 +90,47 @@ def calculate_aoh(
         yg.read_shape_like(species_info_path, elevation) as species_range,
     ):
         filtered_habitats = habitat.isin(habitat_list)
+        habitat_float = filtered_habitats.astype(yg.DataType.Float32)
 
-        # Convolve with weight matrix to calculate the fraction of each pixel's area
-        # that is surrounded by suitable habitat (accounting for geometric overlap)
-        edged_habitats = filtered_habitats.astype(yg.DataType.Float32).conv2d(weight_matrix)
+        # Detect which neighbors are present (1) or missing (0)
+        has_north = habitat_float.conv2d(north_matrix)
+        has_south = habitat_float.conv2d(south_matrix)
+        has_east = habitat_float.conv2d(east_matrix)
+        has_west = habitat_float.conv2d(west_matrix)
+        has_northeast = habitat_float.conv2d(northeast_matrix)
+        has_northwest = habitat_float.conv2d(northwest_matrix)
+        has_southeast = habitat_float.conv2d(southeast_matrix)
+        has_southwest = habitat_float.conv2d(southwest_matrix)
+
+        # Count missing cardinals (0 to 4)
+        missing_cardinals = (yg.constant(1.0) - has_north) + (yg.constant(1.0) - has_south) + \
+                           (yg.constant(1.0) - has_east) + (yg.constant(1.0) - has_west)
+
+        # Detect corners where BOTH adjacent cardinals are missing AND the diagonal is missing
+        # In these cases, we need to add back the p² corner overlap
+        # If the diagonal neighbor is present, both pixels lose the corner so no correction needed
+        # NE corner: north AND east AND northeast all missing
+        # NW corner: north AND west AND northwest all missing
+        # SE corner: south AND east AND southeast all missing
+        # SW corner: south AND west AND southwest all missing
+        missing_ne_corner = (yg.constant(1.0) - has_north) * (yg.constant(1.0) - has_east) * \
+                           (yg.constant(1.0) - has_northeast)
+        missing_nw_corner = (yg.constant(1.0) - has_north) * (yg.constant(1.0) - has_west) * \
+                           (yg.constant(1.0) - has_northwest)
+        missing_se_corner = (yg.constant(1.0) - has_south) * (yg.constant(1.0) - has_east) * \
+                           (yg.constant(1.0) - has_southeast)
+        missing_sw_corner = (yg.constant(1.0) - has_south) * (yg.constant(1.0) - has_west) * \
+                           (yg.constant(1.0) - has_southwest)
+        corner_overlaps = missing_ne_corner + missing_nw_corner + missing_se_corner + missing_sw_corner
+
+        # Calculate remaining fraction:
+        # Start at 1.0, subtract edge_proportion for each missing cardinal,
+        # add back edge_proportion² for each corner overlap (only when diagonal is also missing)
+        edged_habitats = yg.constant(1.0) - (missing_cardinals * edge_proportion) + \
+                        (corner_overlaps * (edge_proportion ** 2))
 
         # CRITICAL: Multiply by filtered_habitats to ensure non-habitat pixels (center=0) stay 0
-        # This prevents dilation/blurring - we only want erosion of existing habitat
-        edged_habitats = edged_habitats * filtered_habitats
+        edged_habitats = edged_habitats * habitat_float
 
         # Clip to ensure values are between 0 and 1
         edged_habitats = yg.where(edged_habitats < 0.0, 0.0, edged_habitats)
