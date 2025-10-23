@@ -72,18 +72,16 @@ def calculate_aoh(
         logger.error("No habitats found in crosswalk! %s", raw_habitats)
         sys.exit()
 
-    # Spatial weight matrix accounting for geometric overlap of edge regions
-    # Corners represent edge_proportion², cardinals are edge strips minus corner overlaps,
-    # and center is the remaining interior after all edges are accounted for
-    corner_weight = edge_proportion ** 2
-    cardinal_weight = edge_proportion - (2 * corner_weight)
-    center_weight = 1.0 - (4 * corner_weight + 4 * cardinal_weight)
-
-    weight_matrix = np.array([
-        [corner_weight, cardinal_weight, corner_weight],
-        [cardinal_weight, center_weight, cardinal_weight],
-        [corner_weight, cardinal_weight, corner_weight],
-    ])
+    # Convolution matrices to detect each neighbor (4 cardinals + 4 diagonals)
+    # 1 where the neighbor is, 0 elsewhere
+    north_matrix = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    south_matrix = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    east_matrix = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]])
+    west_matrix = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    northeast_matrix = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    northwest_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    southeast_matrix = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    southwest_matrix = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
 
     with (
         yg.read_raster(elevation_path) as elevation,
@@ -92,14 +90,60 @@ def calculate_aoh(
         yg.read_shape_like(species_info_path, elevation) as species_range,
     ):
         filtered_habitats = habitat.isin(habitat_list)
+        habitat_float = filtered_habitats.astype(yg.DataType.Float32)
 
-        # Convolve with weight matrix to calculate the fraction of each pixel's area
-        # that is surrounded by suitable habitat (accounting for geometric overlap)
-        edged_habitats = filtered_habitats.astype(yg.DataType.Float32).conv2d(weight_matrix)
+        # Detect which neighbours are present (1) or missing (0)
+        has_north = habitat_float.conv2d(north_matrix)
+        has_south = habitat_float.conv2d(south_matrix)
+        has_east = habitat_float.conv2d(east_matrix)
+        has_west = habitat_float.conv2d(west_matrix)
+        has_northeast = habitat_float.conv2d(northeast_matrix)
+        has_northwest = habitat_float.conv2d(northwest_matrix)
+        has_southeast = habitat_float.conv2d(southeast_matrix)
+        has_southwest = habitat_float.conv2d(southwest_matrix)
+
+        # Calculate remaining area using geometric approach
+        # Think of this as expanding non-habitat by distance edge_proportion
+
+        is_missing_n = yg.constant(1.0) - has_north
+        is_missing_s = yg.constant(1.0) - has_south
+        is_missing_e = yg.constant(1.0) - has_east
+        is_missing_w = yg.constant(1.0) - has_west
+        is_missing_ne = yg.constant(1.0) - has_northeast
+        is_missing_nw = yg.constant(1.0) - has_northwest
+        is_missing_se = yg.constant(1.0) - has_southeast
+        is_missing_sw = yg.constant(1.0) - has_southwest
+
+        # Step 1: Calculate remaining rectangular core after cardinal erosion
+        # Each missing cardinal removes a strip of width/height p
+        vertical_removed = (is_missing_n + is_missing_s) * edge_proportion
+        horizontal_removed = (is_missing_e + is_missing_w) * edge_proportion
+
+        # Clamp to [0, 1] to handle p > 0.5 cases
+        vertical_remaining = yg.constant(1.0) - vertical_removed
+        vertical_remaining = yg.where(vertical_remaining < 0.0, 0.0, vertical_remaining)
+
+        horizontal_remaining = yg.constant(1.0) - horizontal_removed
+        horizontal_remaining = yg.where(horizontal_remaining < 0.0, 0.0, horizontal_remaining)
+
+        # Core rectangular area remaining after cardinal erosion
+        core_area = vertical_remaining * horizontal_remaining
+
+        # Step 2: Subtract diagonal encroachments
+        # Each missing diagonal removes its p² corner, but only where corners exist
+        # and haven't already been removed by cardinals
+        # If adjacent cardinals are missing, the diagonal's encroachment is already accounted for
+        diagonal_removal = \
+            is_missing_ne * has_north * has_east * (edge_proportion ** 2) + \
+            is_missing_nw * has_north * has_west * (edge_proportion ** 2) + \
+            is_missing_se * has_south * has_east * (edge_proportion ** 2) + \
+            is_missing_sw * has_south * has_west * (edge_proportion ** 2)
+
+        # Final remaining area
+        edged_habitats = core_area - diagonal_removal
 
         # CRITICAL: Multiply by filtered_habitats to ensure non-habitat pixels (center=0) stay 0
-        # This prevents dilation/blurring - we only want erosion of existing habitat
-        edged_habitats = edged_habitats * filtered_habitats
+        edged_habitats = edged_habitats * habitat_float
 
         # Clip to ensure values are between 0 and 1
         edged_habitats = yg.where(edged_habitats < 0.0, 0.0, edged_habitats)
