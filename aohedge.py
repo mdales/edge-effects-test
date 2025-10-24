@@ -37,6 +37,32 @@ def crosswalk_habitats(crosswalk_table: dict[str, list[int]], raw_habitats: set[
         result |= set(crosswalked_habatit)
     return result
 
+def create_circular_kernel(radius: int) -> tuple[np.ndarray, float]:
+    """
+    Create a circular convolution kernel for edge erosion.
+
+    Args:
+        radius: Erosion radius in pixels (e.g., 5 for 500m with 100m pixels)
+
+    Returns:
+        Tuple of (kernel matrix, expected sum for fully interior pixels)
+    """
+    size = 2 * radius + 1
+    kernel = np.zeros((size, size), dtype=np.float32)
+    center = radius
+
+    for i in range(size):
+        for j in range(size):
+            distance = np.sqrt((i - center) ** 2 + (j - center) ** 2)
+            if distance <= radius:
+                kernel[i, j] = 1.0
+
+    expected_sum = float(np.sum(kernel))
+    logger.info("Created circular kernel: radius=%d, size=%dx%d, expected_sum=%.1f",
+                radius, size, size, expected_sum)
+
+    return kernel, expected_sum
+
 def calculate_aoh(
     species_info_path: Path,
     habitat_path: Path,
@@ -44,6 +70,7 @@ def calculate_aoh(
     area_path: Path,
     crosswalk_path: Path,
     output_path: Path,
+    radius: int = 1,
 ) -> None:
 
     os.makedirs(output_path.parent, exist_ok=True)
@@ -71,11 +98,8 @@ def calculate_aoh(
         logger.error("No habitats found in crosswalk! %s", raw_habitats)
         sys.exit()
 
-    matrix = np.array([
-        [1.0, 1.0, 1.0],
-        [1.0, 1.0, 1.0],
-        [1.0, 1.0, 1.0],
-    ])
+    # Create circular erosion kernel
+    matrix, expected_sum = create_circular_kernel(radius)
 
     with (
         yg.read_raster(elevation_path) as elevation,
@@ -84,7 +108,7 @@ def calculate_aoh(
         yg.read_shape_like(species_info_path, elevation) as species_range,
     ):
         filtered_habitats = habitat.isin(habitat_list)
-        edged_habitats = filtered_habitats.astype(yg.DataType.Float32).conv2d(matrix) == 9.0
+        edged_habitats = filtered_habitats.astype(yg.DataType.Float32).conv2d(matrix) == expected_sum
 
         aoh = species_range * \
             ((elevation > elevation_lower) & (elevation < elevation_upper)) * \
@@ -94,7 +118,9 @@ def calculate_aoh(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Binary AoH generator")
+    parser = argparse.ArgumentParser(
+        description="Binary AoH generator with circular edge erosion"
+    )
     parser.add_argument(
         '--species',
         type=Path,
@@ -131,6 +157,13 @@ def main() -> None:
         dest="crosswalk_path",
     )
     parser.add_argument(
+        '--radius',
+        type=int,
+        help="Edge erosion radius in pixels (default: 1 for ~100m with 100m pixels)",
+        default=1,
+        dest="radius",
+    )
+    parser.add_argument(
         '--output',
         type=Path,
         help="Path of result raster",
@@ -146,6 +179,7 @@ def main() -> None:
         args.area_path,
         args.crosswalk_path,
         args.output_path,
+        args.radius,
     )
 
 if __name__ == "__main__":
