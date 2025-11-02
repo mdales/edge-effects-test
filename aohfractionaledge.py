@@ -105,14 +105,14 @@ def calculate_aoh(
         # Calculate remaining area using geometric approach
         # Think of this as expanding non-habitat by distance edge_proportion
 
-        is_missing_n = yg.constant(1.0) - has_north
-        is_missing_s = yg.constant(1.0) - has_south
-        is_missing_e = yg.constant(1.0) - has_east
-        is_missing_w = yg.constant(1.0) - has_west
-        is_missing_ne = yg.constant(1.0) - has_northeast
-        is_missing_nw = yg.constant(1.0) - has_northwest
-        is_missing_se = yg.constant(1.0) - has_southeast
-        is_missing_sw = yg.constant(1.0) - has_southwest
+        is_missing_n = 1.0 - has_north
+        is_missing_s = 1.0 - has_south
+        is_missing_e = 1.0 - has_east
+        is_missing_w = 1.0 - has_west
+        is_missing_ne = 1.0 - has_northeast
+        is_missing_nw = 1.0 - has_northwest
+        is_missing_se = 1.0 - has_southeast
+        is_missing_sw = 1.0 - has_southwest
 
         # Step 1: Calculate remaining rectangular core after cardinal erosion
         # Each missing cardinal removes a strip of width/height p
@@ -120,10 +120,10 @@ def calculate_aoh(
         horizontal_removed = (is_missing_e + is_missing_w) * edge_proportion
 
         # Clamp to [0, 1] to handle p > 0.5 cases
-        vertical_remaining = yg.constant(1.0) - vertical_removed
+        vertical_remaining = 1.0 - vertical_removed
         vertical_remaining = yg.where(vertical_remaining < 0.0, 0.0, vertical_remaining)
 
-        horizontal_remaining = yg.constant(1.0) - horizontal_removed
+        horizontal_remaining = 1.0 - horizontal_removed
         horizontal_remaining = yg.where(horizontal_remaining < 0.0, 0.0, horizontal_remaining)
 
         # Core rectangular area remaining after cardinal erosion
@@ -152,6 +152,7 @@ def calculate_aoh(
         aoh = species_range * \
             ((elevation > elevation_lower) & (elevation < elevation_upper)) * \
             edged_habitats * area
+
         with alive_bar(manual=True) as bar:
             aoh.to_geotiff(output_path, callback=bar)
 
